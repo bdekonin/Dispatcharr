@@ -1186,6 +1186,10 @@ class MultiWorkerVODConnectionManager:
                 utc_end=utc_end,
                 offset=offset
             )
+            # Jellyfin viewers share the server's IP and user agent. An explicit
+            # playback ID must never adopt another viewer's source or slot.
+            if session_id and matching_session_id != session_id:
+                matching_session_id = None
 
             idle_stream_count = 0
 

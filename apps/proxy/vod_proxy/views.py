@@ -17,6 +17,7 @@ from apps.vod.utils import is_vod_movies_enabled, is_vod_series_enabled
 from apps.m3u.models import M3UAccountProfile
 from apps.proxy.vod_proxy.multi_worker_connection_manager import MultiWorkerVODConnectionManager, infer_content_type_from_url, get_vod_client_stop_key
 from .utils import get_client_info
+from .source_pin import read_source_pin, claim_source_pin
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
@@ -144,6 +145,23 @@ def _vod_session_path_redirect(request, session_id, profile_id=None, user=None):
     return HttpResponse(status=301, headers={"Location": redirect_url})
 
 
+def _selection_from_pin(pin, content_obj, redis_client, allowed_m3u_profiles):
+    profile = M3UAccountProfile.objects.select_related(
+        "m3u_account__user_agent"
+    ).get(id=int(pin["profile_id"]), is_active=True, m3u_account__is_active=True)
+    if allowed_m3u_profiles is not None and profile.id not in {
+        p.id for p in allowed_m3u_profiles.get(profile.m3u_account_id, [])
+    }:
+        raise ValueError("Pinned profile is no longer allowed")
+    return {
+        "content_obj": content_obj,
+        "m3u_account": profile.m3u_account,
+        "m3u_profile": profile,
+        "current_connections": int(redis_client.get(f"profile_connections:{profile.id}") or 0),
+        "final_stream_url": pin["stream_url"],
+    }
+
+
 def _select_vod_stream(
     content_type,
     content_id,
@@ -167,13 +185,27 @@ def _select_vod_stream(
     content_obj, relation, candidates = _get_content_and_relation(
         content_type, content_id, preferred_m3u_account_id, preferred_stream_id
     )
-    if not content_obj or not relation:
+    if not content_obj:
+        return None
+
+    redis_client = None
+    if session_id:
+        try:
+            from core.utils import RedisClient
+            redis_client = RedisClient.get_client()
+            if redis_client is None:
+                raise ValueError("Redis unavailable for session source pin")
+            pin = read_source_pin(redis_client, session_id, content_type, content_id)
+            if pin:
+                return _selection_from_pin(pin, content_obj, redis_client, allowed_m3u_profiles)
+        except Exception:
+            logger.exception("[VOD-PIN] Cannot reuse source for session %s", session_id)
+            return None
+
+    if not relation:
         return None
 
     ordered = _order_candidates(candidates, relation)
-    # Temporary source pin for Limitless; never mix byte ranges across files.
-    if str(content_id) == "81636beb-615e-49f3-ae4c-096346750633" and str(profile_id) == "2":
-        ordered = [candidate for candidate in ordered if candidate.m3u_account_id == 2]
     if allowed_m3u_profiles is not None:
         candidate_profiles = [
             (cand, selected_profile)
@@ -223,6 +255,18 @@ def _select_vod_stream(
             cand_account.name,
             cand_account.priority,
         )
+        if session_id:
+            try:
+                pin = claim_source_pin(redis_client, session_id, content_type, content_id, {
+                    "content_type": content_type,
+                    "content_id": str(content_id),
+                    "profile_id": m3u_profile.id,
+                    "stream_url": final_stream_url,
+                })
+                return _selection_from_pin(pin, content_obj, redis_client, allowed_m3u_profiles)
+            except Exception:
+                logger.exception("[VOD-PIN] Cannot pin source for session %s", session_id)
+                return None
         return {
             "content_obj": content_obj,
             "m3u_account": cand_account,

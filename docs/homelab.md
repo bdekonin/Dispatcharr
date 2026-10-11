@@ -5,6 +5,29 @@
 - Fork: `bdekonin/Dispatcharr`.
 - Custom branch: `homelab`, based on upstream `v0.31.0` (`bcbb68c4f054ee56383a41604cfcd7302b85da66`).
 - Preserve the existing fixes before changing playback behavior or deploying a new image.
+- The `star` stack is managed in Portainer, not in the private homelab repository. This fork owns the application code; Portainer owns the stack configuration.
+
+## General session pinning
+
+The movie-specific filter has been removed. First selection for a session writes `vod_source_pin:<session_id>` using Redis `SET NX`: concurrent workers use the winner's profile and exact upstream URL. HEAD probes and subsequent GET/Range requests with that session ID reuse it before considering provider priority or capacity. Existing persistent sessions seed a pin from their stored source.
+
+Pin metadata expires after 24 hours without a request and is refreshed on use. It does not reserve a provider slot. The existing connection manager still handles atomic slot reservation, shared overlapping requests, and cleanup. Connection cleanup leaves the source pin available for a rewind/reconnect. If the pinned profile is disabled, disallowed, or Redis cannot supply a valid pin, that session fails rather than switching byte layouts; start a new playback session to select another provider.
+
+An explicit session ID cannot adopt another viewer's idle session based on IP/user agent. Lazy episode-provider discovery remains unchanged and runs before the initial source is pinned.
+
+Scope: pinning prevents switching provider URLs within a session; it cannot guarantee that a provider never replaces the bytes at the same URL. Direct Redirect-to-provider mode does not use the proxy's source pin.
+
+## Validation and rollout
+
+`.github/workflows/homelab.yml` runs all VOD regression tests in the pinned upstream Linux container on pushes/PRs to `homelab`, then builds `docker/Dockerfile.homelab` only after tests pass. No Python tests or dependency installation are required on the Mac. If GitHub Actions is disabled for the fork, enable its workflows in the repository's Actions tab.
+
+Added regression coverage includes concurrent source claims, independent viewers, HEAD selection followed by a seek at full capacity, connection cleanup, legacy sessions, invalid pins, disabled profiles, Redis failure, and lazy episode failover. Existing slot-accounting tests now resume the same explicit session ID.
+
+Status: implementation and CI configuration prepared; remote test results and production rollout must be verified before calling this validated. The local test attempt failed during dependency initialization and did not validate these changes. The currently deployed image remains `dispatcharr-homelab:0.31.0-617817fa`.
+
+After green CI, build on the Docker host from the exact fork commit, update only Dispatcharr's image tag in Portainer, and keep re-pull disabled for a locally built tag. Preserve the data/VOD volumes, VPN configuration and Jellyfin settings. Restore any manually pinned `.strm` URL to its original sessionless Dispatcharr URL so each playback gets its own session; keep a backup of the workaround file. Do not leave a shared fixed session/profile in a library file.
+
+Verify a fresh normal playback URL, HEAD and forward/backward 206 Range responses with the same total file size, and two independent viewers. Test seeking on the TV after the server checks. For rollback to the last deployed fork image, restore `dispatcharr-homelab:0.31.0-617817fa` in Portainer; no source bind mount is needed for that image.
 
 ## Verified inventory — 2026-10-11
 

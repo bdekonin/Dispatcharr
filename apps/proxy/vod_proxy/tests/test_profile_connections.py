@@ -1012,7 +1012,7 @@ class TestStreamSetupCreateRaceAndIdleGuard(TestCase):
                  new=type(content),
              ):
             response = mgr.stream_content_with_session(
-                session_id="vod_new",
+                session_id="vod_idle_gone",
                 content_obj=content,
                 stream_url="http://example.com/m.mp4",
                 m3u_profile=profile,
@@ -1115,7 +1115,7 @@ class TestIdleMatchAcrossDifferentProfile(TestCase):
             # This request freshly selected profile B, e.g. due to
             # capacity/priority shifting since profile A's session went idle.
             response = mgr.stream_content_with_session(
-                session_id="vod_new_session",
+                session_id="vod_idle",
                 content_obj=content,
                 stream_url="http://example.com/m.mp4",
                 m3u_profile=profile_b,
@@ -1198,7 +1198,7 @@ class TestIdleMatchAcrossDifferentProfile(TestCase):
                  new=type(content),
              ):
             response = mgr.stream_content_with_session(
-                session_id="vod_new_session_2",
+                session_id="vod_idle_gone",
                 content_obj=content,
                 stream_url="http://example.com/m.mp4",
                 m3u_profile=profile_b,
@@ -1281,7 +1281,7 @@ class TestIdleMatchAcrossDifferentProfile(TestCase):
                  new=type(content),
              ):
             first = mgr.stream_content_with_session(
-                session_id="vod_storm_1",
+                session_id="vod_idle",
                 content_obj=content,
                 stream_url="http://example.com/m.mp4",
                 m3u_profile=profile_b,
@@ -1295,7 +1295,7 @@ class TestIdleMatchAcrossDifferentProfile(TestCase):
             )
 
             second = mgr.stream_content_with_session(
-                session_id="vod_storm_2",
+                session_id="vod_idle",
                 content_obj=content,
                 stream_url="http://example.com/m.mp4",
                 m3u_profile=profile_b,
