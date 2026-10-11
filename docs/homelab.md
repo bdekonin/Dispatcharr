@@ -23,7 +23,20 @@ Scope: pinning prevents switching provider URLs within a session; it cannot guar
 
 Added regression coverage includes concurrent source claims, independent viewers, HEAD selection followed by a seek at full capacity, connection cleanup, legacy sessions, invalid pins, disabled profiles, Redis failure, and lazy episode failover. Existing slot-accounting tests now resume the same explicit session ID.
 
-Status: implementation and CI configuration prepared; remote test results and production rollout must be verified before calling this validated. The local test attempt failed during dependency initialization and did not validate these changes. The currently deployed image remains `dispatcharr-homelab:0.31.0-617817fa`.
+Validated source commit: `59280759eaf7d284c64a0fcb63ad622578b6d5cf`. [GitHub Actions run 38120163100](https://github.com/bdekonin/Dispatcharr/actions/runs/38120163100) passed the full VOD test suite and the exact Docker image build on Linux. The regression file adds 11 tests. The local test attempt failed during dependency initialization and was abandoned; subsequent tests ran only on GitHub's runner.
+
+Production rollout is pending: Chrome control was unavailable, so no deployment or TV playback check was performed for this increment. The currently deployed image remains `dispatcharr-homelab:0.31.0-617817fa`, which still includes the previous temporary movie-specific workaround.
+
+Build the validated source commit on the Docker host:
+
+```sh
+git clone --branch homelab --single-branch https://github.com/bdekonin/Dispatcharr.git /opt/dispatcharr-fork-59280759
+cd /opt/dispatcharr-fork-59280759
+git checkout --detach 59280759eaf7d284c64a0fcb63ad622578b6d5cf
+docker build -f docker/Dockerfile.homelab -t dispatcharr-homelab:0.31.0-59280759 .
+```
+
+Portainer image: `dispatcharr-homelab:0.31.0-59280759`. CI builds and validates the image but does not publish it to a registry.
 
 After green CI, build on the Docker host from the exact fork commit, update only Dispatcharr's image tag in Portainer, and keep re-pull disabled for a locally built tag. Preserve the data/VOD volumes, VPN configuration and Jellyfin settings. Restore any manually pinned `.strm` URL to its original sessionless Dispatcharr URL so each playback gets its own session; keep a backup of the workaround file. Do not leave a shared fixed session/profile in a library file.
 
