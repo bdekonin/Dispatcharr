@@ -36,7 +36,9 @@ It contains:
 
 Existing host helper files include `patch_vod_failover.py`, `pin_limitless_temporary.py`, `download_limitless_local.py`, and `SEEK-WORKAROUND.md`. These are operational artifacts, not evidence of additional active application patches. Do not run them during the import.
 
-## Next increment
+The existing Portainer Compose also contains Jellyfin-specific configuration: a 4 GB tmpfs at `/cache/transcodes`, the Intel render device, and the render group. These settings were preserved. They belong to the deployment configuration, not Dispatcharr's source patch.
+
+## Image build
 
 - Build `docker/Dockerfile.homelab` with the repository root as its context. It uses the exact deployed upstream image digest and copies the custom source from this fork; rebuilding unchanged frontend assets is unnecessary for this increment.
 - Validate the included code and playback, then replace the bind mount with the image's own code.
@@ -52,6 +54,32 @@ This tag is local to the Docker host; no new registry credentials are required.
 
 Each playback session must keep the same provider, profile, and upstream file across overlapping Range requests and seeks. Requests within that session must reuse its capacity allocation; cleanup must release it reliably. A source with a different byte layout must not silently serve an existing session's byte ranges. Verify forward/backward seeks and independent simultaneous viewers before rollout.
 
-## Current status
+## Deployment and validation — 2026-10-11
 
-Fork and baseline branch are published. The exact custom source has been imported and its syntax and SHA-256 verified. The temporary file-export SSH key was removed immediately after copying the file. The custom image build and deployment are the remaining steps.
+The exact custom source is committed as `617817fa`. The Docker host checkout is `/opt/dispatcharr-fork-617817fa`; Portainer's `star` stack now uses `dispatcharr-homelab:0.31.0-617817fa`. The `views.py` bind mount was removed; the data and VOD volumes remain attached.
+
+Validation passed:
+
+- Python syntax and exact source SHA-256 in the exported file, built image, and deployed container.
+- Dispatcharr HTTP 200 after deployment; Gluetun and Jellyfin report healthy.
+- Two real byte-range requests, at byte offsets 3,400,000,000 and 3,300,000,000: both returned HTTP 206, 1,024 bytes, and the same total file size (4,819,135,614 bytes).
+
+This is a Range/rewind smoke test; it is not an end-to-end TV playback or multi-viewer validation. The general permanent seek behavior described above remains future work.
+
+The temporary file-export SSH key was removed immediately after copying the file.
+
+## Rollback
+
+In Portainer's `star` stack, restore Dispatcharr's original pinned image:
+
+```yaml
+image: ghcr.io/dispatcharr/dispatcharr@sha256:f81924fa3dbfeb463b3908be7e086bf58aacbd2ba56062bfb555ee3a471acf8f
+```
+
+Restore its additional volume entry:
+
+```yaml
+- /opt/dispatcharr-patch/views.py:/app/apps/proxy/vod_proxy/views.py:ro
+```
+
+Deploy with re-pull disabled. The existing host patch and backups remain available; keep the data, VOD, and Jellyfin volume configuration intact.
