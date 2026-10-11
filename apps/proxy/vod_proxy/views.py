@@ -152,6 +152,7 @@ def _select_vod_stream(
     profile_id=None,
     session_id=None,
     allowed_m3u_profiles=None,
+    _lazy_retry=True,
 ):
     """
     Resolve content to a provider URL and M3U profile.
@@ -170,6 +171,9 @@ def _select_vod_stream(
         return None
 
     ordered = _order_candidates(candidates, relation)
+    # Temporary source pin for Limitless; never mix byte ranges across files.
+    if str(content_id) == "81636beb-615e-49f3-ae4c-096346750633" and str(profile_id) == "2":
+        ordered = [candidate for candidate in ordered if candidate.m3u_account_id == 2]
     if allowed_m3u_profiles is not None:
         candidate_profiles = [
             (cand, selected_profile)
@@ -227,7 +231,120 @@ def _select_vod_stream(
             "final_stream_url": final_stream_url,
         }
 
+    if _lazy_retry and content_type == "episode":
+        if _lazy_fetch_episode_providers(content_id):
+            return _select_vod_stream(
+                content_type,
+                content_id,
+                preferred_m3u_account_id,
+                preferred_stream_id,
+                profile_id,
+                session_id,
+                allowed_m3u_profiles,
+                _lazy_retry=False,
+            )
+
     return None
+
+
+def _lazy_fetch_episode_providers(content_id):
+    """Haal afleveringen op bij een lijn die de serie wel voert.
+
+    Xtream Codes heeft geen bulk-endpoint voor afleveringen: get_series_info kost
+    een call per serie. Daardoor bestaan episode-relaties vaak maar op een account,
+    en faalt failover terwijl andere lijnen de serie wel hebben. Deze functie haalt
+    die ene serie alsnog op (~0,4s) zodat afspelen doorgaat.
+
+    Retourneert True als er episode-relaties zijn bijgekomen.
+    """
+    try:
+        from apps.vod.models import M3USeriesRelation
+        from apps.vod.tasks import refresh_series_episodes
+        from apps.m3u.connection_pool import pool_has_capacity_for_profile
+        from core.utils import RedisClient
+
+        episode = (
+            Episode.objects.filter(uuid=content_id)
+            .select_related("series")
+            .first()
+        )
+        if not episode:
+            return False
+
+        reeds = set(
+            M3UEpisodeRelation.objects.filter(episode=episode).values_list(
+                "m3u_account_id", flat=True
+            )
+        )
+
+        kandidaten = (
+            M3USeriesRelation.objects.filter(
+                series_id=episode.series_id, m3u_account__is_active=True
+            )
+            .exclude(m3u_account_id__in=reeds)
+            .select_related("m3u_account")
+            .order_by("-m3u_account__priority", "id")
+        )
+
+        try:
+            redis_client = RedisClient.get_client()
+        except Exception:
+            redis_client = None
+
+        for rel in kandidaten:
+            account = rel.m3u_account
+
+            # Capaciteit eerst: geen provider-call verspillen aan een volle lijn.
+            if redis_client is not None:
+                profielen = M3UAccountProfile.objects.filter(
+                    m3u_account=account, is_active=True
+                )
+                if not any(
+                    pool_has_capacity_for_profile(p, redis_client) for p in profielen
+                ):
+                    logger.info(
+                        "[VOD-LAZY-EPISODES] %s heeft geen capaciteit, overslaan",
+                        account.name,
+                    )
+                    continue
+
+            lock_key = f"lazy_ep:{episode.series_id}:{account.id}"
+            if redis_client is not None:
+                try:
+                    if not redis_client.set(lock_key, "1", nx=True, ex=120):
+                        continue
+                except Exception:
+                    pass
+
+            try:
+                t0 = time.time()
+                refresh_series_episodes(account, episode.series, rel.external_series_id)
+                logger.info(
+                    "[VOD-LAZY-EPISODES] Afleveringen opgehaald via %s in %.2fs",
+                    account.name,
+                    time.time() - t0,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[VOD-LAZY-EPISODES] Ophalen via %s mislukt: %s", account.name, exc
+                )
+                continue
+            finally:
+                if redis_client is not None:
+                    try:
+                        redis_client.delete(lock_key)
+                    except Exception:
+                        pass
+
+            if M3UEpisodeRelation.objects.filter(
+                episode=episode, m3u_account=account
+            ).exists():
+                return True
+
+        return False
+    except Exception as exc:
+        logger.warning("[VOD-LAZY-EPISODES] Onverwachte fout: %s", exc)
+        return False
 
 
 def _get_content_and_relation(content_type, content_id, preferred_m3u_account_id=None, preferred_stream_id=None):
